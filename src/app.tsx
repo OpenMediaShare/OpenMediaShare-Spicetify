@@ -1,24 +1,3 @@
-interface VideoMetadata {
-    video: {
-        creator: string;
-        title: string;
-        views?: string;
-        likes?: string;
-        thumbnail: string;
-        url: string;
-        color?: string[] | string | object
-    };
-    time: {
-        curruntTime: number;
-        totalTime: number;
-        timePercent: number;
-        formattedTime: string;
-    };
-    auth: {
-        uuid: string;
-        name: string
-    };
-}
 
 const apiURL = 'http://localhost:9494/api'
 const headers = {
@@ -26,27 +5,30 @@ const headers = {
     'Content-Type': 'application/json',
 }
 const metadata: VideoMetadata = {
-    video: {
-        creator: "OpenMediaShare",
-        title: "Waiting For Playback",
+    data: {
+        creator: 'OpenMediaShare',
+        title: '',
         views: undefined,
         likes: undefined,
-        thumbnail: "https://cdn.discordapp.com/avatars/877743969503682612/a90d74f19a4e5b2319303f8c90b85405.webp?size=240",
-        url: "https://waterwolf.net",
-        color: "WHITE"
+        thumbnail: 'https://cdn.discordapp.com/avatars/877743969503682612/a90d74f19a4e5b2319303f8c90b85405.webp?size=240',
+        url: 'https://waterwolf.net',
+        color: {}
     },
     time: {
         curruntTime: 0,
         totalTime: 0,
         timePercent: 0,
-        formattedTime: "0w0"
+        formattedTime: '0w0'
     },
     auth: {
-        name: "spicetify",
+        name: 'Spicetify Client',
+        service: 'spicetify',
         uuid: crypto.randomUUID()
-    }
+    },
+    requests: {}
 }
 let lastUpdate = Date.now();
+let ws = new WebSocket('ws://localhost:9494')
 
 
 
@@ -59,15 +41,24 @@ async function main() {
 
 
     Spicetify.Player.addEventListener('onplaypause', async (e) => {
-        if (metadata.video.title === '') getVideoData(e);
+        if (metadata.data.title === '') getVideoData(e);
+        let state: PlayerState = 'unknown'; state = e?.data.isPaused ? 'paused' : 'playing' 
+        metadata.data.playerState = state;
         await fetch(`${apiURL}/auth/main`, {
             'headers': headers,
             'method': 'POST',
             'body': JSON.stringify(metadata)
         });
         console.log('Play Pause');
-        
 
+        await fetch(`${apiURL}/controls/status`, {
+            'headers': headers,
+            'method': 'POST',
+            'body': JSON.stringify({
+                auth: metadata.auth,
+                data: {state: state}
+            })
+        });
     })
 
     Spicetify.Player.addEventListener('songchange', async (e) => {
@@ -76,7 +67,7 @@ async function main() {
     })
 
     Spicetify.Player.addEventListener('onprogress', async (e) => {
-        if (metadata.video.title === '') {
+        if (metadata.data.title === '') {
             // Force Metadata Update
             Spicetify.Player.pause();
             Spicetify.Player.play();
@@ -105,18 +96,21 @@ async function main() {
         lastUpdate = Date.now()
         // await fetch(`${apiURL}/auth/openSession`,{'body': JSON.stringify(metadata),'method': 'POST'});
     })
+
+
+    
 }
 
 
 
 async function getVideoData(e: Event & { data: Spicetify.PlayerState; } | undefined) {
     if (!e?.data) return
-    metadata.video.title = e.data.item.name
+    metadata.data.title = e.data.item.name
     if (!e.data.item.artists) return
-    metadata.video.creator = e.data.item.artists.map(a => a.name).join(', ');
-    metadata.video.thumbnail = `https://i.scdn.co/image/${e.data.item.metadata.image_url.split(':')[2]}`
-    metadata.video.url = 'https://waterwolf.net/404'
-    metadata.video.color = Spicetify.colorExtractor(e.data.item.metadata.image_url)
+    metadata.data.creator = e.data.item.artists.map(a => a.name).join(', ');
+    metadata.data.thumbnail = `https://i.scdn.co/image/${e.data.item.metadata.image_url.split(':')[2]}`
+    metadata.data.url = 'https://waterwolf.net/404'
+    metadata.data.color = Spicetify.colorExtractor(e.data.item.metadata.image_url)
     await fetch(`${apiURL}/media/all`, {
         'headers': headers,
         'method': 'POST',
@@ -130,5 +124,63 @@ function secondsToFormat(seconds: number) {
     if (s < 10) { s = `0${s}`; }
     return [m, s];
 }
+
+setInterval(async () => {
+    if (ws === undefined || ws.readyState == 3){
+        ws = new WebSocket('ws://localhost:9494')
+    }
+    if (ws.readyState == 1) return;
+    await fetch(`${apiURL}/controls/${metadata.auth.uuid}/`, {
+        'headers': headers,
+    })
+    .then(data => data.json())
+    .then((data: VideoMetadata['requests']) => {
+        if (data?.pause) Spicetify.Player.pause();
+        if (data?.play) Spicetify.Player.play();
+        if (data?.rewind) Spicetify.Player.back();
+        if (data?.skip) Spicetify.Player.next();
+        if (data?.volume) Spicetify.Player.setVolume(data.volume);
+        if (data?.seek) Spicetify.Player.seek(data.seek * 1000) //convert from seconds to millcseonds
+    })
+},500)
+
+
+ws.onopen = (ev) => {
+    console.log('WEB SOCKET');
+}
+
+ws.onmessage = (ev) => {
+    console.log(ev);
+    const json = JSON.parse(ev.data);
+    switch(json.event) {
+        case 'playEvent': {
+            Spicetify.Player.play();
+            break;
+        }
+        case 'pauseEvent': {
+            Spicetify.Player.pause();
+            break;
+        }
+        case 'volumeChangeEvent': {
+            Spicetify.Player.setVolume(json.volume);
+            break
+        }
+        case 'seekChangeEvent': {
+            Spicetify.Player.seek(json.seek * 1000)
+            break
+        }
+        case 'rewindEvent': {
+            Spicetify.Player.back();
+            break;
+        }
+        case 'skipEvent': {
+            Spicetify.Player.next();
+            break;
+        }
+    }
+    // alert('test');
+    // ws.send('test');
+};
+
 
 export default main;
